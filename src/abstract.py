@@ -74,7 +74,6 @@ def update_reg(reg: BitBus, my_idx, idx: BitBus, in_data: BitBus, clk: BitBus):
         last_clk = current_clk
         current_clk = clk.value.raw_value[0]
 
-    print(f'clk={current_clk}, last_clk={last_clk}')
     if current_clk and not last_clk:
         if my_idx == int(
             '0b' + ''.join('1' if bit else '0' for bit in idx.value.raw_value),

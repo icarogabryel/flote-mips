@@ -2,3 +2,5 @@
 .vscode/
 flote/
 *.vcd
+*.py[cod]
+__pycache__/
