@@ -5,8 +5,9 @@ from flote.backend.python.core.component import Component
 
 from abstract import (
     AbsAssignment, alu_out_op, update_reg, update_mem, read_mem, mux_2to1,
-    update_pc, extract_opcode, extract_rs, extract_rt, extract_rd, mux_4bit_2to1,
-    sign_extend_4to16, mux_alu_src, shift_left_1, add_bus, concat_jump_addr, alu_zero
+    extract_opcode, extract_rs, extract_rt, extract_rd, mux_4bit_2to1,
+    sign_extend_4to16, mux_alu_src, shift_left_1, add_bus, concat_jump_addr, alu_zero,
+    control_unit, update_pc_reg
 )
 
 # Declarations of buses
@@ -19,7 +20,8 @@ clk.value = BitBusValue([False])
 #* Program Counter (PC)
 pc = BitBus()
 pc.id = "pc"
-pc.value = BitBusValue([False] * 16)
+# Inicializa PC em -2 (0xFFFE) para que o primeiro incremento resulte em 0
+pc.value = BitBusValue([True] * 15 + [False])  # 1111111111111110 = -2 em complemento de 2
 
 # PC + 2 (próxima instrução sequencial)
 pc_plus_2 = BitBus()
@@ -141,8 +143,8 @@ alu_out.value = BitBusValue([False] * 16)
 
 #* Register Bank
 registers_data = [
-    BitBusValue(([False] * 12) + [False, False, True, True]),
-    BitBusValue(([False] * 12) + [True, False, False, False]),
+    BitBusValue([False] * 16),
+    BitBusValue([False] * 16),
     BitBusValue([False] * 16),
     BitBusValue([False] * 16),
     BitBusValue([False] * 16),
@@ -264,8 +266,9 @@ buses = [
 clk.influence_list = [pc] + [bus for bus in registers]
 
 #. Program Counter (PC) - agora recebe next_pc ao invés de incrementar internamente
-pc.assignment = AbsAssignment(partial(update_reg, pc, 0, BitBus(), next_pc, clk))
-pc.influence_list = [instruction, pc_plus_2, jump_addr]
+pc.assignment = AbsAssignment(partial(update_pc_reg, pc, next_pc, clk))
+# PC deve ser influenciado pelos registradores para garantir que eles escrevam primeiro
+pc.influence_list = [instruction, pc_plus_2] + [bus for bus in registers]
 
 #. Lógica de Branch e Jump
 # PC + 2 (próxima instrução sequencial)
@@ -301,7 +304,7 @@ jump_addr.influence_list = [next_pc]
 # Multiplexador Jump: seleciona entre branch_or_seq ou jump_addr
 jump.influence_list = [next_pc]
 next_pc.assignment = AbsAssignment(partial(mux_2to1, jump, branch_or_seq, jump_addr))
-next_pc.influence_list = [pc]
+next_pc.influence_list = []  # Removido PC para evitar loop circular
 
 #. Instruction Memory (leitura assíncrona)
 instruction.assignment = AbsAssignment(partial(read_mem, instruction_memory, pc))
@@ -309,7 +312,43 @@ instruction.influence_list = [opcode, rs, rt, rd]
 
 #. Decodificação da Instrução
 opcode.assignment = AbsAssignment(partial(extract_opcode, instruction))
-opcode.influence_list = []  # Vai para unidade de controle (não implementada ainda)
+opcode.influence_list = [reg_dst, alu_src, mem_to_reg, rf_write_enable, mem_write_enable, branch, alu_op, jump]
+
+#. Unidade de Controle
+# Função auxiliar para extrair cada sinal da tupla retornada pela control_unit
+def get_reg_dst(opcode: BitBus) -> BitBusValue:
+    return control_unit(opcode)[0]
+
+def get_alu_src(opcode: BitBus) -> BitBusValue:
+    return control_unit(opcode)[1]
+
+def get_mem_to_reg(opcode: BitBus) -> BitBusValue:
+    return control_unit(opcode)[2]
+
+def get_rf_write_enable(opcode: BitBus) -> BitBusValue:
+    return control_unit(opcode)[3]
+
+def get_mem_write_enable(opcode: BitBus) -> BitBusValue:
+    return control_unit(opcode)[4]
+
+def get_branch(opcode: BitBus) -> BitBusValue:
+    return control_unit(opcode)[5]
+
+def get_alu_op(opcode: BitBus) -> BitBusValue:
+    return control_unit(opcode)[6]
+
+def get_jump(opcode: BitBus) -> BitBusValue:
+    return control_unit(opcode)[7]
+
+# Atribuir os sinais de controle baseado no opcode
+reg_dst.assignment = AbsAssignment(partial(get_reg_dst, opcode))
+alu_src.assignment = AbsAssignment(partial(get_alu_src, opcode))
+mem_to_reg.assignment = AbsAssignment(partial(get_mem_to_reg, opcode))
+rf_write_enable.assignment = AbsAssignment(partial(get_rf_write_enable, opcode))
+mem_write_enable.assignment = AbsAssignment(partial(get_mem_write_enable, opcode))
+branch.assignment = AbsAssignment(partial(get_branch, opcode))
+alu_op.assignment = AbsAssignment(partial(get_alu_op, opcode))
+jump.assignment = AbsAssignment(partial(get_jump, opcode))
 
 rs.assignment = AbsAssignment(partial(extract_rs, instruction))
 rs.influence_list = [rf_read_addr1]
@@ -348,7 +387,7 @@ alu_out.assignment = AbsAssignment(partial(alu_out_op, alu_a, alu_b_mux, alu_op)
 rf_write_enable.influence_list = [bus for bus in registers]
 
 for i, reg in enumerate(registers):
-    reg.assignment = AbsAssignment(partial(update_reg, reg, i, rf_write_addr, rf_write_data, clk))
+    reg.assignment = AbsAssignment(partial(update_reg, reg, i, rf_write_addr, rf_write_data, rf_write_enable, clk))
 
 # Conectar rs a rf_read_addr1
 rf_read_addr1.assignment = AbsAssignment(lambda: BitBusValue(rs.value.raw_value))

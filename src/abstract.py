@@ -10,8 +10,8 @@ class AbsAssignment(Evaluator):
 
 
 # Global variables to help with clock edge detection
-current_clk = False
-last_clk = None
+# Dictionary to track clock state per component (identified by id)
+clock_states: dict[int, tuple[bool, bool | None]] = {}  # {component_id: (current_clk, last_clk)}
 
 
 def sum_bit_bus(a: BitBus, b: BitBus) -> BitBusValue:
@@ -63,40 +63,42 @@ def alu_out_op(a: BitBus, b: BitBus, sel: BitBus) -> BitBusValue:
     return result
 
 
-def update_reg(reg: BitBus, my_idx, idx: BitBus, in_data: BitBus, clk: BitBus):
-    global last_clk
-    global current_clk
+def update_reg(reg: BitBus, my_idx, idx: BitBus, in_data: BitBus, write_enable: BitBus, clk: BitBus):
+    global clock_states
 
-    if last_clk is None:
-        last_clk = False
+    component_id = id(reg)
+    if component_id not in clock_states:
+        clock_states[component_id] = (False, False)
+
+    current_clk, last_clk = clock_states[component_id]
 
     if current_clk != clk.value.raw_value[0]:
         last_clk = current_clk
         current_clk = clk.value.raw_value[0]
+        clock_states[component_id] = (current_clk, last_clk)
 
     if current_clk and not last_clk:
-        if my_idx == int(
+        if write_enable.value.raw_value[0] and my_idx == int(
             '0b' + ''.join('1' if bit else '0' for bit in idx.value.raw_value),
             2,
         ):
             return BitBusValue(in_data.value.raw_value)
 
     return BitBusValue(reg.value.raw_value)
-
-
 def update_mem(mem: BitBus, my_idx, addr: BitBus, write_data: BitBus, write_enable: BitBus, clk: BitBus):
     """Atualiza uma posição da memória (byte) na borda de subida do clock se write_enable estiver ativo"""
-    global last_clk
-    global current_clk
+    global clock_states
 
-    if last_clk is None:
-        last_clk = False
+    component_id = id(mem)
+    if component_id not in clock_states:
+        clock_states[component_id] = (False, False)
+
+    current_clk, last_clk = clock_states[component_id]
 
     if current_clk != clk.value.raw_value[0]:
         last_clk = current_clk
         current_clk = clk.value.raw_value[0]
-
-    # Escrita na borda de subida do clock
+        clock_states[component_id] = (current_clk, last_clk)    # Escrita na borda de subida do clock
     if current_clk and not last_clk:
         if write_enable.value.raw_value[0]:  # Se write_enable está ativo
             addr_value = int('0b' + ''.join('1' if bit else '0' for bit in addr.value.raw_value), 2)
@@ -137,17 +139,18 @@ def mux_2to1(sel: BitBus, in0: BitBus, in1: BitBus) -> BitBusValue:
 
 def update_pc(pc: BitBus, clk: BitBus) -> BitBusValue:
     """Atualiza o PC na borda de subida do clock (PC = PC + 2)"""
-    global last_clk
-    global current_clk
+    global clock_states
 
-    if last_clk is None:
-        last_clk = False
+    component_id = id(pc)
+    if component_id not in clock_states:
+        clock_states[component_id] = (False, False)
+
+    current_clk, last_clk = clock_states[component_id]
 
     if current_clk != clk.value.raw_value[0]:
         last_clk = current_clk
         current_clk = clk.value.raw_value[0]
-
-    # Incrementa PC na borda de subida do clock (PC = PC + 2)
+        clock_states[component_id] = (current_clk, last_clk)    # Incrementa PC na borda de subida do clock (PC = PC + 2)
     if current_clk and not last_clk:
         pc_value = int('0b' + ''.join('1' if bit else '0' for bit in pc.value.raw_value), 2)
         new_pc = pc_value + 2
@@ -191,6 +194,148 @@ def mux_4bit_2to1(sel: BitBus, in0: BitBus, in1: BitBus) -> BitBusValue:
         return BitBusValue(in1.value.raw_value)
     else:  # sel == 0
         return BitBusValue(in0.value.raw_value)
+
+
+def control_unit(opcode: BitBus) -> tuple[BitBusValue, BitBusValue, BitBusValue, BitBusValue, BitBusValue, BitBusValue, BitBusValue, BitBusValue]:
+    """Unidade de controle que gera sinais baseado no opcode
+
+    Retorna: (reg_dst, alu_src, mem_to_reg, rf_write_enable, mem_write_enable, branch, alu_op[3 bits], jump)
+
+    Instruções:
+    0000 - ADD  (tipo R): reg_dst=1, alu_src=0, mem_to_reg=0, reg_write=1, mem_write=0, branch=0, alu_op=000, jump=0
+    0001 - SUB  (tipo R): reg_dst=1, alu_src=0, mem_to_reg=0, reg_write=1, mem_write=0, branch=0, alu_op=001, jump=0
+    0010 - AND  (tipo R): reg_dst=1, alu_src=0, mem_to_reg=0, reg_write=1, mem_write=0, branch=0, alu_op=010, jump=0
+    0011 - OR   (tipo R): reg_dst=1, alu_src=0, mem_to_reg=0, reg_write=1, mem_write=0, branch=0, alu_op=011, jump=0
+    0100 - SLT  (tipo R): reg_dst=1, alu_src=0, mem_to_reg=0, reg_write=1, mem_write=0, branch=0, alu_op=100, jump=0
+    0101 - ADDI (tipo I): reg_dst=0, alu_src=1, mem_to_reg=0, reg_write=1, mem_write=0, branch=0, alu_op=000, jump=0
+    0110 - LW   (tipo I): reg_dst=0, alu_src=1, mem_to_reg=1, reg_write=1, mem_write=0, branch=0, alu_op=000, jump=0
+    0111 - SW   (tipo I): reg_dst=X, alu_src=1, mem_to_reg=X, reg_write=0, mem_write=1, branch=0, alu_op=000, jump=0
+    1000 - BEQ  (tipo I): reg_dst=X, alu_src=0, mem_to_reg=X, reg_write=0, mem_write=0, branch=1, alu_op=001, jump=0
+    1001 - JUMP (tipo J): reg_dst=X, alu_src=X, mem_to_reg=X, reg_write=0, mem_write=0, branch=0, alu_op=XXX, jump=1
+    """
+    opcode_str = ''.join(['1' if bit else '0' for bit in opcode.value.raw_value])
+
+    # Valores padrão (NOP)
+    reg_dst = False
+    alu_src = False
+    mem_to_reg = False
+    rf_write_enable = False
+    mem_write_enable = False
+    branch = False
+    alu_op = [False, False, False]
+    jump = False
+
+    match opcode_str:
+        case '0000':  # ADD
+            reg_dst = True
+            alu_src = False
+            mem_to_reg = False
+            rf_write_enable = True
+            mem_write_enable = False
+            branch = False
+            alu_op = [False, False, False]  # 000
+            jump = False
+
+        case '0001':  # SUB
+            reg_dst = True
+            alu_src = False
+            mem_to_reg = False
+            rf_write_enable = True
+            mem_write_enable = False
+            branch = False
+            alu_op = [False, False, True]  # 001
+            jump = False
+
+        case '0010':  # AND
+            reg_dst = True
+            alu_src = False
+            mem_to_reg = False
+            rf_write_enable = True
+            mem_write_enable = False
+            branch = False
+            alu_op = [False, True, False]  # 010
+            jump = False
+
+        case '0011':  # OR
+            reg_dst = True
+            alu_src = False
+            mem_to_reg = False
+            rf_write_enable = True
+            mem_write_enable = False
+            branch = False
+            alu_op = [False, True, True]  # 011
+            jump = False
+
+        case '0100':  # SLT
+            reg_dst = True
+            alu_src = False
+            mem_to_reg = False
+            rf_write_enable = True
+            mem_write_enable = False
+            branch = False
+            alu_op = [True, False, False]  # 100
+            jump = False
+
+        case '0101':  # ADDI
+            reg_dst = False
+            alu_src = True
+            mem_to_reg = False
+            rf_write_enable = True
+            mem_write_enable = False
+            branch = False
+            alu_op = [False, False, False]  # 000
+            jump = False
+
+        case '0110':  # LW
+            reg_dst = False
+            alu_src = True
+            mem_to_reg = True
+            rf_write_enable = True
+            mem_write_enable = False
+            branch = False
+            alu_op = [False, False, False]  # 000
+            jump = False
+
+        case '0111':  # SW
+            reg_dst = False  # Don't care
+            alu_src = True
+            mem_to_reg = False  # Don't care
+            rf_write_enable = False
+            mem_write_enable = True
+            branch = False
+            alu_op = [False, False, False]  # 000
+            jump = False
+
+        case '1000':  # BEQ
+            reg_dst = False  # Don't care
+            alu_src = False
+            mem_to_reg = False  # Don't care
+            rf_write_enable = False
+            mem_write_enable = False
+            branch = True
+            alu_op = [False, False, True]  # 001 (subtração para comparar)
+            jump = False
+
+        case '1001':  # JUMP
+            reg_dst = False  # Don't care
+            alu_src = False  # Don't care
+            mem_to_reg = False  # Don't care
+            rf_write_enable = False
+            mem_write_enable = False
+            branch = False
+            alu_op = [False, False, False]  # Don't care
+            jump = True
+
+    return (
+        BitBusValue([reg_dst]),
+        BitBusValue([alu_src]),
+        BitBusValue([mem_to_reg]),
+        BitBusValue([rf_write_enable]),
+        BitBusValue([mem_write_enable]),
+        BitBusValue([branch]),
+        BitBusValue(alu_op),
+        BitBusValue([jump])
+    )
 
 
 def sign_extend_4to16(value_4bit: BitBus) -> BitBusValue:
@@ -254,3 +399,23 @@ def alu_zero(alu_result: BitBus) -> BitBusValue:
     """Gera sinal zero da ALU (1 bit): true se resultado for zero"""
     is_zero = all(not bit for bit in alu_result.value.raw_value)
     return BitBusValue([is_zero])
+
+
+def update_pc_reg(pc: BitBus, next_pc: BitBus, clk: BitBus) -> BitBusValue:
+    """Atualiza o PC na borda de subida do clock com o valor de next_pc"""
+    global clock_states
+
+    component_id = id(pc)
+    if component_id not in clock_states:
+        clock_states[component_id] = (False, False)
+
+    current_clk, last_clk = clock_states[component_id]
+
+    if current_clk != clk.value.raw_value[0]:
+        last_clk = current_clk
+        current_clk = clk.value.raw_value[0]
+        clock_states[component_id] = (current_clk, last_clk)    # Atualiza PC na borda de subida do clock
+    if current_clk and not last_clk:
+        return BitBusValue(next_pc.value.raw_value)
+
+    return BitBusValue(pc.value.raw_value)
