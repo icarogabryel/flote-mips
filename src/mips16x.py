@@ -156,7 +156,35 @@ rf_read_data2.influence_list = [alu_b]
 
 rf_write_addr.influence_list = [bus for bus in registers]
 rf_write_data.influence_list = [bus for bus in registers]
-rf_write_data.assignment = AbsAssignment(lambda: BitBusValue(alu_out.value.raw_value))
+rf_write_data.assignment = AbsAssignment(lambda: BitBusValue(mux_out.value.raw_value))
+
+#. Data Memory
+# A saída da ALU entra como endereço da memória
+mem_addr.assignment = AbsAssignment(lambda: BitBusValue(alu_out.value.raw_value))
+mem_addr.influence_list = [mem_read_data] + memory
+
+# O dado a ser escrito na memória vem do segundo registrador lido
+mem_write_data.assignment = AbsAssignment(lambda: BitBusValue(rf_read_data2.value.raw_value))
+mem_write_data.influence_list = memory
+
+# Configuração das células de memória
+mem_write_enable.influence_list = memory
+clk.influence_list = clk.influence_list + memory
+
+for i, mem in enumerate(memory):
+    mem.assignment = AbsAssignment(partial(update_mem, mem, i, mem_addr, mem_write_data, mem_write_enable, clk))
+
+# Leitura da memória (assíncrona)
+mem_read_data.assignment = AbsAssignment(partial(read_mem, memory, mem_addr))
+mem_read_data.influence_list = [mux_out]
+
+#. Multiplexador (mem_to_reg seleciona entre alu_out e mem_read_data)
+# Se mem_to_reg = 0: saída da ALU
+# Se mem_to_reg = 1: saída da memória
+alu_out.influence_list = [mem_addr, mux_out]
+mem_to_reg.influence_list = [mux_out]
+mux_out.assignment = AbsAssignment(partial(mux_2to1, mem_to_reg, alu_out, mem_read_data))
+mux_out.influence_list = [rf_write_data]
 
 mips = Component("mips16x")
 for bus in buses:
