@@ -6,7 +6,7 @@ from flote.backend.python.core.component import Component
 from abstract import (
     AbsAssignment, alu_out_op, update_reg, update_mem, read_mem, mux_2to1,
     update_pc, extract_opcode, extract_rs, extract_rt, extract_rd, mux_4bit_2to1,
-    sign_extend_4to16, mux_alu_src
+    sign_extend_4to16, mux_alu_src, shift_left_1, add_bus, concat_jump_addr, alu_zero
 )
 
 # Declarations of buses
@@ -20,6 +20,57 @@ clk.value = BitBusValue([False])
 pc = BitBus()
 pc.id = "pc"
 pc.value = BitBusValue([False] * 16)
+
+# PC + 2 (próxima instrução sequencial)
+pc_plus_2 = BitBus()
+pc_plus_2.id = "pc_plus_2"
+pc_plus_2.value = BitBusValue([False] * 16)
+
+# Constante 2 para somar ao PC
+const_2 = BitBus()
+const_2.id = "const_2"
+const_2.value = BitBusValue([False] * 15 + [False, True, False])  # 2 em binário
+
+# Branch offset deslocado
+branch_offset = BitBus()
+branch_offset.id = "branch_offset"
+branch_offset.value = BitBusValue([False] * 16)
+
+# Endereço de branch (PC + 2 + offset << 1)
+branch_addr = BitBus()
+branch_addr.id = "branch_addr"
+branch_addr.value = BitBusValue([False] * 16)
+
+# Sinal zero da ALU
+zero = BitBus()
+zero.id = "zero"
+zero.value = BitBusValue([False])
+
+# Sinais de controle
+branch = BitBus()
+branch.id = "branch"
+branch.value = BitBusValue([False])
+
+jump = BitBus()
+jump.id = "jump"
+jump.value = BitBusValue([False])
+
+# Multiplexadores para o próximo PC
+pc_src = BitBus()  # Branch and zero
+pc_src.id = "pc_src"
+pc_src.value = BitBusValue([False])
+
+branch_or_seq = BitBus()  # Saída do mux branch
+branch_or_seq.id = "branch_or_seq"
+branch_or_seq.value = BitBusValue([False] * 16)
+
+jump_addr = BitBus()  # Endereço de jump
+jump_addr.id = "jump_addr"
+jump_addr.value = BitBusValue([False] * 16)
+
+next_pc = BitBus()  # Próximo valor do PC
+next_pc.id = "next_pc"
+next_pc.value = BitBusValue([False] * 16)
 
 #* Instruction Memory (32 bytes de 8 bits cada)
 # Cada instrução de 16 bits ocupa 2 bytes consecutivos
@@ -168,6 +219,17 @@ mux_out.value = BitBusValue([False] * 16)
 buses = [
     clk,
     pc,
+    pc_plus_2,
+    const_2,
+    branch_offset,
+    branch_addr,
+    zero,
+    branch,
+    jump,
+    pc_src,
+    branch_or_seq,
+    jump_addr,
+    next_pc,
     instruction,
     opcode,
     rs,
@@ -201,9 +263,45 @@ buses = [
 #. Clock
 clk.influence_list = [pc] + [bus for bus in registers]
 
-#. Program Counter (PC)
-pc.assignment = AbsAssignment(partial(update_pc, pc, clk))
-pc.influence_list = [instruction]
+#. Program Counter (PC) - agora recebe next_pc ao invés de incrementar internamente
+pc.assignment = AbsAssignment(partial(update_reg, pc, 0, BitBus(), next_pc, clk))
+pc.influence_list = [instruction, pc_plus_2, jump_addr]
+
+#. Lógica de Branch e Jump
+# PC + 2 (próxima instrução sequencial)
+pc_plus_2.assignment = AbsAssignment(partial(add_bus, pc, const_2))
+pc_plus_2.influence_list = [branch_addr, branch_or_seq]
+
+# Branch offset = immediate << 1
+branch_offset.assignment = AbsAssignment(partial(shift_left_1, immediate))
+branch_offset.influence_list = [branch_addr]
+
+# Branch address = PC + 2 + (offset << 1)
+branch_addr.assignment = AbsAssignment(partial(add_bus, pc_plus_2, branch_offset))
+branch_addr.influence_list = [branch_or_seq]
+
+# Sinal zero da ALU
+zero.assignment = AbsAssignment(partial(alu_zero, alu_out))
+zero.influence_list = [pc_src]
+
+# PC_src = Branch AND Zero
+branch.influence_list = [pc_src]
+pc_src.assignment = AbsAssignment(lambda: BitBusValue([branch.value.raw_value[0] and zero.value.raw_value[0]]))
+pc_src.influence_list = [branch_or_seq]
+
+# Multiplexador Branch: seleciona entre PC+2 ou branch_addr
+branch_or_seq.assignment = AbsAssignment(partial(mux_2to1, pc_src, pc_plus_2, branch_addr))
+branch_or_seq.influence_list = [next_pc]
+
+# Jump address = PC[15:12] | (instr[11:0] << 1)
+# Extrai os 12 bits inferiores da instrução (rd + rt + rs = 12 bits)
+jump_addr.assignment = AbsAssignment(partial(concat_jump_addr, pc, instruction))
+jump_addr.influence_list = [next_pc]
+
+# Multiplexador Jump: seleciona entre branch_or_seq ou jump_addr
+jump.influence_list = [next_pc]
+next_pc.assignment = AbsAssignment(partial(mux_2to1, jump, branch_or_seq, jump_addr))
+next_pc.influence_list = [pc]
 
 #. Instruction Memory (leitura assíncrona)
 instruction.assignment = AbsAssignment(partial(read_mem, instruction_memory, pc))

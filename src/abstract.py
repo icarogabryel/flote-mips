@@ -209,3 +209,48 @@ def mux_alu_src(sel: BitBus, reg_data: BitBus, immediate: BitBus) -> BitBusValue
         return BitBusValue(immediate.value.raw_value)
     else:  # sel == 0, usa dado do registrador
         return BitBusValue(reg_data.value.raw_value)
+
+
+def shift_left_1(value: BitBus) -> BitBusValue:
+    """Desloca o valor 1 bit à esquerda (equivalente a multiplicar por 2)"""
+    bits = value.value.raw_value
+    # Desloca para esquerda e adiciona 0 no bit menos significativo
+    shifted = bits[1:] + [False]
+    return BitBusValue(shifted)
+
+
+def add_bus(a: BitBus, b: BitBus) -> BitBusValue:
+    """Soma dois sinais de 16 bits"""
+    a_value = int('0b' + ''.join(['1' if bit else '0' for bit in a.value.raw_value]), 2)
+    b_value = int('0b' + ''.join(['1' if bit else '0' for bit in b.value.raw_value]), 2)
+
+    result = a_value + b_value
+    result_bits = bin(result)[2:]
+    result_bools = [bit == '1' for bit in result_bits]
+
+    # Ajusta para 16 bits
+    if len(result_bools) < 16:
+        result_bools = [False] * (16 - len(result_bools)) + result_bools
+    elif len(result_bools) > 16:
+        result_bools = result_bools[-16:]
+
+    return BitBusValue(result_bools)
+
+
+def concat_jump_addr(pc_upper: BitBus, instr_field: BitBus) -> BitBusValue:
+    """Concatena PC[15:12] com campo da instrução deslocado 1 bit à esquerda
+    PC[15:12] | instr_field[11:0] << 1"""
+    pc_bits = pc_upper.value.raw_value[0:4]  # 4 bits superiores do PC
+    instr_bits = instr_field.value.raw_value  # Campo da instrução (12 bits)
+
+    # Desloca instrução 1 bit à esquerda (adiciona 0 no LSB)
+    shifted_instr = instr_bits[1:] + [False]  # Agora tem 12 bits
+
+    # Concatena: PC[15:12] (4 bits) + shifted_instr (12 bits) = 16 bits
+    return BitBusValue(pc_bits + shifted_instr)
+
+
+def alu_zero(alu_result: BitBus) -> BitBusValue:
+    """Gera sinal zero da ALU (1 bit): true se resultado for zero"""
+    is_zero = all(not bit for bit in alu_result.value.raw_value)
+    return BitBusValue([is_zero])
